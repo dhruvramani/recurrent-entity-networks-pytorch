@@ -106,34 +106,25 @@ class RecurrentEntityNetwork(nn.Module):
         return self.activation(state_U + inputs_W + key_V)
 
     def forward(self, inputs, state, scope=None):
+        # Split the hidden state into blocks (each U, V, W are shared across blocks).
+        state = torch.split(state, self.num_blocks, dim=1)
+        next_states = []
+        for j, state_j in enumerate(state): # Hidden State (j)
+            key_j = torch.unsqueeze(self.keys[j], dim=0) 
+            gate_j = self.get_gate(state_j, key_j, inputs)
+            candidate_j = self.get_candidate(state_j, key_j, inputs, self.U, self.V, self.W, self.U_bias)
 
-            # Split the hidden state into blocks (each U, V, W are shared across blocks).
-            state = tf.split(state, self._num_blocks, axis=1)
+            # Equation 4: h_j <- h_j + g_j * h_j^~
+            # Perform an update of the hidden state (memory).
+            state_j_next = state_j + torch.unsqueeze(gate_j, dim=-1) * candidate_j
 
-            next_states = []
-            for j, state_j in enumerate(state): # Hidden State (j)
-                key_j = tf.expand_dims(self._keys[j], axis=0)
-                gate_j = self.get_gate(state_j, key_j, inputs)
-                candidate_j = self.get_candidate(state_j, key_j, inputs, U, V, W, U_bias)
+            # Equation 5: h_j <- h_j / \norm{h_j}
+            # Forget previous memories by normalization.
+            state_j_next_norm = F.normalize(state_j_next, p=2, dim=-1)
+            state_j_next_norm = torch.where(torch.gt(state_j_next_norm, 0.0), state_j_next_norm, torch.ones(state_j_next_norm.shape))
+            state_j_next = state_j_next / state_j_next_norm
 
-                # Equation 4: h_j <- h_j + g_j * h_j^~
-                # Perform an update of the hidden state (memory).
-                state_j_next = state_j + tf.expand_dims(gate_j, -1) * candidate_j
-
-                # Equation 5: h_j <- h_j / \norm{h_j}
-                # Forget previous memories by normalization.
-                state_j_next_norm = tf.norm(
-                    tensor=state_j_next,
-                    ord='euclidean',
-                    axis=-1,
-                    keep_dims=True)
-                state_j_next_norm = tf.where(
-                    tf.greater(state_j_next_norm, 0.0),
-                    state_j_next_norm,
-                    tf.ones_like(state_j_next_norm))
-                state_j_next = state_j_next / state_j_next_norm
-
-                next_states.append(state_j_next)
-            state_next = tf.concat(next_states, axis=1)
+            next_states.append(state_j_next)
+        state_next = torch.cat(next_states, axis=1)
         return state_next, state_next
 
